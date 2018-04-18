@@ -1,0 +1,6 @@
+debian/scripts/ /usr/share/urfkill/
+etc/
+usr/share/dbus-1/
+usr/share/polkit-1/
+usr/share/man/
+usr/lib/*/urfkill/urfkilld
