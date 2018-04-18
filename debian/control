@@ -27,6 +27,7 @@ Build-Depends: autopoint,
                android-headers (>= 4.4.2) [amd64 arm64 armhf i386],
 Standards-Version: 3.9.8
 Homepage: http://www.freedesktop.org/wiki/Software/urfkill
+Vcs-Git: https://github.com/gemian/urfkill.git
 
 Package: urfkill
 Architecture: linux-any
