@@ -16,7 +16,9 @@ AM_CPPFLAGS = \
 	$(GIO_CFLAGS)						\
 	$(POLKIT_CFLAGS)					\
 	$(XML_CFLAGS)						\
-	$(GLIB_CFLAGS)
+	$(GLIB_CFLAGS)						\
+	$(HYBRIS_WIFI_CFLAGS)					\
+	$(HYBRIS_PROPS_CFLAGS)
 
 
 libexec_PROGRAMS = urfkilld
@@ -46,6 +48,13 @@ urfkilld_SOURCES =						\
 	urf-daemon.c						\
 	urf-main.c						\
 	$(NULL)
+
+if WITH_HYBRIS
+urfkilld_SOURCES += \
+	urf-device-hybris.h					\
+	urf-device-hybris.c					\
+	$(NULL)
+endif
 
 if SESSION_TRACKING_SYSTEMD
 urfkilld_SOURCES += \
@@ -80,7 +89,9 @@ urfkilld_LDADD =						\
 	$(LIBUDEV_LIBS)						\
 	$(GIO_LIBS)						\
 	$(POLKIT_LIBS)						\
-	$(XML_LIBS)
+	$(XML_LIBS)						\
+	$(HYBRIS_WIFI_LIBS)					\
+	$(HYBRIS_PROPS_LIBS)
 
 CLEANFILES = $(BUILT_SOURCES)
 

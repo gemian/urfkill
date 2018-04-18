@@ -62,12 +62,19 @@ gboolean	 urf_config_get_key_control	(UrfConfig	*config);
 gboolean	 urf_config_get_master_key	(UrfConfig	*config);
 gboolean	 urf_config_get_force_sync	(UrfConfig	*config);
 gboolean	 urf_config_get_persist		(UrfConfig	*config);
+gboolean	 urf_config_get_strict_flight_mode	(UrfConfig	*config);
 
 gboolean	 urf_config_get_persist_state	(UrfConfig	*config,
 						 const gint type);
 void		 urf_config_set_persist_state	(UrfConfig *config,
 						 const gint type,
 						 const KillswitchState state);
+
+gboolean	 urf_config_get_prev_soft	(UrfConfig*config,
+						 const gint type);
+void		 urf_config_set_prev_soft	(UrfConfig*config,
+						 const gint type,
+						 gboolean block);
 
 G_END_DECLS
 

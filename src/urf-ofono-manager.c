@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
  *
- * Copyright (C) 2014 Mathieu Trudel-Lapierre <mathieu.trudel-lapierre@canonical.com>
+ * Copyright (C) 2014 Canonical Ltd.
  *
  * Licensed under the GNU General Public License Version 2
  *
@@ -75,50 +75,92 @@ urf_ofono_manager_finalize (GObject *object)
 	G_OBJECT_CLASS (urf_ofono_manager_parent_class)->finalize (object);
 }
 
+static UrfDeviceOfono *
+urf_ofono_manager_find_modem (UrfOfonoManager *ofono,
+                              const char *object_path)
+{
+	UrfDeviceOfono *device = NULL;
+	GSList *node;
+	const gchar *path;
+
+	for (node = ofono->devices; node; node = node->next) {
+		UrfDevice *dev = node->data;
+
+		path = urf_device_ofono_get_modem_path ( URF_DEVICE_OFONO (dev));
+
+		if (g_strcmp0 (path, object_path) == 0) {
+			device = URF_DEVICE_OFONO (dev);
+			break;
+		}
+	}
+
+	return device;
+}
+
+static void
+device_powered_cb (UrfDevice *device, gboolean powered, gpointer user_data)
+{
+	UrfOfonoManager *ofono = user_data;
+
+	if (powered)
+		urf_arbitrator_add_device (ofono->arbitrator, device);
+	else
+		urf_arbitrator_remove_device (ofono->arbitrator, device);
+}
+
 static void
 urf_ofono_manager_add_modem (UrfOfonoManager *ofono,
                              const char *object_path)
 {
 	UrfDevice *device;
 
+	/* To avoid duplicates as we use both ModemAdded and GetModems */
+	if (urf_ofono_manager_find_modem (ofono, object_path)) {
+		g_debug ("%s was already registered", object_path);
+		return;
+	}
+
+	g_debug ("Adding modem: %s", object_path);
+
 	device = urf_device_ofono_new (modem_idx, object_path);
 	modem_idx++;
+
+	g_signal_connect (device, "ofono-device-powered",
+			  G_CALLBACK (device_powered_cb), ofono);
 
 	/* Keep our own list to avoid the overhead of iterating through all
 	 * devices when we need to remove a modem
 	 */
 	ofono->devices = g_slist_append (ofono->devices, device);
-
-	urf_arbitrator_add_device (ofono->arbitrator, device);
 }
 
 static void
 urf_ofono_manager_remove_modem (UrfOfonoManager *ofono,
                                 const char *object_path)
 {
-	UrfDeviceOfono *device = NULL;
-	GSList *dev = NULL;
-	gchar *path;
+	UrfDeviceOfono *device;
 
-	for (dev = ofono->devices; dev; dev = dev->next) {
-		path = urf_device_ofono_get_path (dev->data);
-
-		if (g_strcmp0 (path, object_path) == 0) {
-			device = dev->data;
-			break;
-		}
-	}
+	device = urf_ofono_manager_find_modem (ofono, object_path);
 
 	if (device) {
 		ofono->devices = g_slist_remove (ofono->devices, device);
 		urf_arbitrator_remove_device (ofono->arbitrator, URF_DEVICE (device));
+		g_object_unref (device);
 	}
 }
 
 static void
 urf_ofono_manager_remove_all_modems (UrfOfonoManager *ofono)
 {
-	g_debug ("Remove all modems.");
+	g_debug ("Remove all modems");
+
+	while (ofono->devices) {
+		UrfDeviceOfono *dev = ofono->devices->data;
+
+		ofono->devices = g_slist_delete_link (ofono->devices, ofono->devices);
+		urf_arbitrator_remove_device (ofono->arbitrator, URF_DEVICE (dev));
+		g_object_unref (dev);
+	}
 }
 
 static void
@@ -128,9 +170,13 @@ ofono_get_modems_cb (GObject *source_object,
 {
 	UrfOfonoManager *ofono = user_data;
 	GVariant *value, *modems;
-	GVariantIter iter, dict_iter;
+	GVariantIter iter;
+	GVariantIter *dict_iter;
 	gchar *modem_path;
 	GError *error = NULL;
+
+	if (ofono->proxy == NULL)
+		return;
 
 	value = g_dbus_proxy_call_finish (ofono->proxy, res, &error);
 
@@ -161,14 +207,20 @@ ofono_signal_cb (GDBusProxy *proxy,
                  gpointer user_data)
 {
 	UrfOfonoManager *ofono = user_data;
-	const char *object_path;
+	gchar *object_path;
 
 	if (g_strcmp0 (signal_name, "ModemAdded") == 0) {
 		g_variant_get (parameters, "(oa{sv})", &object_path, NULL);
+		g_debug ("ModemAdded signal %s", object_path);
+
 		urf_ofono_manager_add_modem (ofono, object_path);
+		g_free (object_path);
 	} else if (g_strcmp0 (signal_name, "ModemRemoved") == 0) {
 		g_variant_get (parameters, "(o)", &object_path);
+		g_debug ("ModemRemoved signal %s", object_path);
+
 		urf_ofono_manager_remove_modem (ofono, object_path);
+		g_free (object_path);
 	}
 }
 
@@ -207,7 +259,7 @@ on_ofono_appeared (GDBusConnection *connection,
 {
 	UrfOfonoManager *ofono = user_data;
 
-	g_debug("oFono appeared on the bus");
+	g_debug ("oFono appeared on the bus");
 
 	g_cancellable_reset (ofono->cancellable);
 	g_dbus_proxy_new (connection,
@@ -238,10 +290,11 @@ on_ofono_vanished (GDBusConnection *connection,
 		ofono->proxy = NULL;
 	}
 
-	if (ofono->devices) {
-		modem_idx = 100;
+	if (ofono->devices)
 		urf_ofono_manager_remove_all_modems (ofono);
-	}
+
+	/* All modems removed, reset id */
+	modem_idx = 100;
 }
 
 /**

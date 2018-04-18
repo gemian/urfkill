@@ -1,6 +1,7 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
  *
  * Copyright (C) 2011 Gary Ching-Pang Lin <glin@suse.com>
+ * Copyright (C) 2014 Canonical Ltd.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -70,9 +71,23 @@ struct _UrfDevicePrivate {
 	char		*object_path;
 	GDBusConnection	*connection;
 	GDBusNodeInfo	*introspection_data;
+	guint            dev_iface_id;
+	guint            child_iface_id;
 };
 
 G_DEFINE_ABSTRACT_TYPE_WITH_PRIVATE (UrfDevice, urf_device, G_TYPE_OBJECT)
+
+
+/**
+ * urf_device_get_connection:
+ **/
+GDBusConnection *
+urf_device_get_connection (UrfDevice *device)
+{
+	UrfDevicePrivate *priv = URF_DEVICE_GET_PRIVATE (device);
+
+	return priv->connection;
+}
 
 /**
  * urf_device_get_index:
@@ -175,15 +190,13 @@ urf_device_set_hardware_blocked (UrfDevice *device, gboolean blocked)
 /**
  * urf_device_set_software_blocked:
  **/
-gboolean
-urf_device_set_software_blocked (UrfDevice *device, gboolean blocked)
+void
+urf_device_set_software_blocked (UrfDevice *device, gboolean blocked, GTask *task)
 {
-	g_return_val_if_fail (URF_IS_DEVICE (device), FALSE);
+	g_assert (URF_IS_DEVICE (device));
 
 	if (URF_GET_DEVICE_CLASS (device)->set_software_blocked)
-		return URF_GET_DEVICE_CLASS (device)->set_software_blocked (device, blocked);
-
-	return FALSE;
+		URF_GET_DEVICE_CLASS (device)->set_software_blocked (device, blocked, task);
 }
 
 /**
@@ -325,6 +338,14 @@ urf_device_dispose (GObject *object)
 	}
 
 	if (priv->connection) {
+		if (priv->child_iface_id > 0)
+			g_dbus_connection_unregister_object (priv->connection,
+							     priv->child_iface_id);
+		if (priv->dev_iface_id > 0)
+			g_dbus_connection_unregister_object (priv->connection,
+							     priv->dev_iface_id);
+		priv->child_iface_id = 0;
+		priv->dev_iface_id = 0;
 		g_object_unref (priv->connection);
 		priv->connection = NULL;
 	}
@@ -430,7 +451,6 @@ handle_get_property (GDBusConnection *connection,
                      gpointer user_data)
 {
 	UrfDevice *device = URF_DEVICE (user_data);
-
 	GVariant *retval = NULL;
 
 	if (g_strcmp0 (property_name, "index") == 0)
@@ -497,24 +517,41 @@ urf_device_register_device (UrfDevice *device, const GDBusInterfaceVTable vtable
 		return FALSE;
 	}
 
+	error = NULL;
+
 	priv->object_path = urf_device_compute_object_path (device);
+	g_debug ("%s: priv->object_path: %s", __func__, priv->object_path);
+
 	infos = priv->introspection_data->interfaces;
+
 	reg_id = g_dbus_connection_register_object (priv->connection,
 		                                    priv->object_path,
 		                                    infos[0],
 		                                    &interface_vtable,
 		                                    device,
 		                                    NULL,
-		                                    NULL);
+		                                    &error);
+
+	if (error != NULL)
+		g_warning ("Error registering Device interface: %s", error->message);
+
 	g_assert (reg_id > 0);
+
+	priv->dev_iface_id = reg_id;
+
 	reg_id = g_dbus_connection_register_object (priv->connection,
 		                                    priv->object_path,
 		                                    infos[1],
 		                                    &vtable,
 		                                    device,
 		                                    NULL,
-		                                    NULL);
+		                                    &error);
+	if (error != NULL)
+		g_warning ("Error registering Device interface: %s", error->message);
+
 	g_assert (reg_id > 0);
+
+	priv->child_iface_id = reg_id;
 
 	return TRUE;
 }

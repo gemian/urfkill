@@ -1,6 +1,7 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
  *
  * Copyright (C) 2011 Gary Ching-Pang Lin <glin@suse.com>
+ * Copyright (C) 2014 Canonical Ltd.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -38,8 +39,8 @@
 #define RFKILL_EVENT_SIZE_V1    8
 #endif
 
+#include "urf-daemon.h"
 #include "urf-device-kernel.h"
-
 #include "urf-utils.h"
 
 #define URF_DEVICE_KERNEL_INTERFACE "org.freedesktop.URfkill.Device.Kernel"
@@ -59,13 +60,6 @@ enum
 	PROP_LAST
 };
 
-enum {
-	SIGNAL_CHANGED,
-	LAST_SIGNAL
-};
-
-static int signals[LAST_SIGNAL] = { 0 };
-
 #define URF_DEVICE_KERNEL_GET_PRIVATE(obj) (G_TYPE_INSTANCE_GET_PRIVATE((obj), \
                                 URF_TYPE_DEVICE_KERNEL, UrfDeviceKernelPrivate))
 
@@ -76,17 +70,13 @@ struct _UrfDeviceKernelPrivate {
 	gboolean	 soft;
 	gboolean	 hard;
 	gboolean	 platform;
-	char		*object_path;
-	GDBusConnection	*connection;
-	GDBusNodeInfo	*introspection_data;
 	int		 fd;
 };
 
 G_DEFINE_TYPE_WITH_PRIVATE (UrfDeviceKernel, urf_device_kernel, URF_TYPE_DEVICE)
 
-
 /**
- * emit_properites_changed
+ * emit_properites_changed:
  **/
 static void
 emit_properites_changed (UrfDeviceKernel *device)
@@ -105,9 +95,9 @@ emit_properites_changed (UrfDeviceKernel *device)
 	                       "hard",
 	                       g_variant_new_boolean (priv->hard));
 
-	g_dbus_connection_emit_signal (priv->connection,
+	g_dbus_connection_emit_signal (urf_device_get_connection (URF_DEVICE (device)),
 	                               NULL,
-	                               priv->object_path,
+	                               urf_device_get_object_path (URF_DEVICE (device)),
 	                               "org.freedesktop.DBus.Properties",
 	                               "PropertiesChanged",
 	                               g_variant_new ("(sa{sv}as)",
@@ -139,11 +129,14 @@ urf_device_kernel_update_states (UrfDevice *device,
 		priv->soft = soft;
 		priv->hard = hard;
 
-		g_signal_emit (G_OBJECT (device), signals[SIGNAL_CHANGED], 0);
+		g_debug("Emitting state-changed on device %s", priv->name);
+		g_signal_emit_by_name(G_OBJECT (device), "state-changed", 0);
+
 		emit_properites_changed (URF_DEVICE_KERNEL (device));
-		g_dbus_connection_emit_signal (priv->connection,
+
+		g_dbus_connection_emit_signal (urf_device_get_connection (device),
 		                               NULL,
-		                               priv->object_path,
+					       urf_device_get_object_path (device),
 		                               URF_DEVICE_KERNEL_INTERFACE,
 		                               "Changed",
 		                               NULL,
@@ -217,8 +210,8 @@ get_hard (UrfDevice *device)
 /**
  * set_soft:
  **/
-static gboolean
-set_soft (UrfDevice *device, gboolean blocked)
+static void
+set_soft (UrfDevice *device, gboolean blocked, GTask *task)
 {
 	UrfDeviceKernel *self = URF_DEVICE_KERNEL (device);
 	UrfDeviceKernelPrivate *priv = URF_DEVICE_KERNEL_GET_PRIVATE (self);
@@ -230,7 +223,8 @@ set_soft (UrfDevice *device, gboolean blocked)
 	event.type = priv->type;
 	event.soft = blocked;
 
-	g_message ("Setting %s to %s",
+	g_message ("%s: Setting %s to %s",
+		   __func__,
 	           type_to_string (priv->type),
 	           blocked ? "blocked" : "unblocked");
 
@@ -238,12 +232,16 @@ set_soft (UrfDevice *device, gboolean blocked)
 	if (len < 0) {
 		g_warning ("Failed to change RFKILL state: %s",
 			   g_strerror (errno));
-		return FALSE;
+
+		if (task)
+			g_task_return_new_error(task,
+						URF_DAEMON_ERROR, 0,
+						"set_soft failed: %s",
+						type_to_string (priv->type));
+	} else {
+		if (task)
+			g_task_return_pointer (task, NULL, NULL);
 	}
-
-	priv->soft = blocked;
-
-	return TRUE;
 }
 
 /**
@@ -346,23 +344,6 @@ constructor (GType type,
 static void
 dispose (GObject *object)
 {
-	UrfDeviceKernelPrivate *priv = URF_DEVICE_KERNEL_GET_PRIVATE (object);
-
-	if (priv->introspection_data) {
-		g_dbus_node_info_unref (priv->introspection_data);
-		priv->introspection_data = NULL;
-	}
-
-	if (priv->connection) {
-		g_object_unref (priv->connection);
-		priv->connection = NULL;
-	}
-
-	if (priv->introspection_data) {
-		g_dbus_node_info_unref (priv->introspection_data);
-		priv->introspection_data = NULL;
-	}
-
 	G_OBJECT_CLASS(urf_device_kernel_parent_class)->dispose(object);
 }
 
@@ -377,7 +358,6 @@ urf_device_kernel_init (UrfDeviceKernel *device)
 
 	priv->name = NULL;
 	priv->platform = FALSE;
-	priv->object_path = NULL;
 
 	fd = open("/dev/rfkill", O_RDWR | O_NONBLOCK);
 	if (fd < 0) {
@@ -414,14 +394,6 @@ urf_device_kernel_class_init(UrfDeviceKernelClass *class)
 	parent_class->set_software_blocked = set_soft;
 	parent_class->is_platform = is_platform;
 	parent_class->update_states = urf_device_kernel_update_states;
-
-	signals[SIGNAL_CHANGED] =
-		g_signal_new ("changed",
-			      G_OBJECT_CLASS_TYPE (class),
-			      G_SIGNAL_RUN_LAST | G_SIGNAL_DETAILED,
-			      0, NULL, NULL,
-			      g_cclosure_marshal_VOID__VOID,
-			      G_TYPE_NONE, 0, G_TYPE_NONE);
 
 	pspec = g_param_spec_boolean ("soft",
 				      "Killswitch Soft Block",
@@ -536,7 +508,9 @@ urf_device_kernel_new (gint    index,
 
 	get_udev_attrs (device);
 
-	if (!urf_device_register_device (URF_DEVICE (device), interface_vtable, introspection_xml)) {
+	if (!urf_device_register_device (URF_DEVICE (device),
+					 interface_vtable,
+					 introspection_xml)) {
 		g_object_unref (device);
 		return NULL;
 	}

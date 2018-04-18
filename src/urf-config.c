@@ -41,6 +41,7 @@ enum
 	OPT_MASTER_KEY,
 	OPT_FORCE_SYNC,
 	OPT_PERSIST,
+	OPT_STRICT_FLIGHT_MODE,
 	OPT_UNKNOWN,
 };
 
@@ -73,6 +74,7 @@ typedef struct {
 	gboolean master_key;
 	gboolean force_sync;
 	gboolean persist;
+	gboolean strict_flight_mode;
 } Options;
 
 typedef struct {
@@ -107,6 +109,8 @@ get_option (const char *option)
 		return OPT_FORCE_SYNC;
 	else if (g_strcmp0 (option, "persist") == 0)
 		return OPT_PERSIST;
+	else if (g_strcmp0 (option, "strict_flight_mode") == 0)
+		return OPT_STRICT_FLIGHT_MODE;
 	return OPT_UNKNOWN;
 }
 
@@ -323,6 +327,12 @@ parse_xml_cdata_handler (void       *data,
 		else if (g_ascii_strcasecmp (str, "FALSE") == 0)
 			info->options.persist = FALSE;
 		break;
+	case OPT_STRICT_FLIGHT_MODE:
+		if (g_ascii_strcasecmp (str, "TRUE") == 0)
+			info->options.strict_flight_mode = TRUE;
+		else if (g_ascii_strcasecmp (str, "FALSE") == 0)
+			info->options.strict_flight_mode = FALSE;
+		break;
 	default:
 		break;
 	}
@@ -434,6 +444,7 @@ profile_xml_parse (DmiInfo    *hardware_info,
 	info->options.master_key = options->master_key;
 	info->options.force_sync = options->force_sync;
 	info->options.persist = options->persist;
+	info->options.strict_flight_mode = options->strict_flight_mode;
 
 	parser = XML_ParserCreate (NULL);
 	XML_SetUserData (parser, (void *)info);
@@ -457,6 +468,7 @@ profile_xml_parse (DmiInfo    *hardware_info,
 	options->master_key = info->options.master_key;
 	options->force_sync = info->options.force_sync;
 	options->persist = info->options.persist;
+	options->strict_flight_mode = info->options.strict_flight_mode;
 
 	g_free (info);
 	return TRUE;
@@ -513,6 +525,13 @@ load_configured_settings (UrfConfig *config)
 		g_error_free (error);
 	error = NULL;
 
+	ret = g_key_file_get_boolean (profile, "Profile", "strict_flight_mode", &error);
+	if (!error)
+		priv->options.strict_flight_mode = ret;
+	else
+		g_error_free (error);
+	error = NULL;
+
 	g_key_file_free (profile);
 
 	return TRUE;
@@ -556,6 +575,10 @@ save_configured_profile (UrfConfig *config)
 
 	value = priv->options.persist;
 	g_key_file_set_value (profile, "Profile", "persist",
+			      value?"true":"false");
+
+	value = priv->options.strict_flight_mode;
+	g_key_file_set_value (profile, "Profile", "strict_flight_mode",
 			      value?"true":"false");
 
 	content = g_key_file_to_data (profile, NULL, NULL);
@@ -607,7 +630,7 @@ urf_config_load_profile (UrfConfig *config)
 		 * control to be enabled: there would not be a way to disable
 		 * it for devices that don't have it.
 		 */
-		priv->options.key_control = FALSE;
+		options->key_control = FALSE;
 
 		return;
 	}
@@ -617,6 +640,7 @@ urf_config_load_profile (UrfConfig *config)
 	options->master_key = priv->options.master_key;
 	options->force_sync = priv->options.force_sync;
 	options->persist = priv->options.persist;
+	options->strict_flight_mode = priv->options.strict_flight_mode;
 
 	profile_dir = g_dir_open (URFKILL_PROFILE_DIR, 0, NULL);
 	while ((file = g_dir_read_name (profile_dir))) {
@@ -649,6 +673,7 @@ urf_config_load_profile (UrfConfig *config)
 	priv->options.master_key = options->master_key;
 	priv->options.force_sync = options->force_sync;
 	priv->options.persist = options->persist;
+	priv->options.strict_flight_mode = options->strict_flight_mode;
 
 	save_configured_profile (config);
 
@@ -709,6 +734,13 @@ urf_config_load_from_file (UrfConfig  *config,
 		g_error_free (error);
 	error = NULL;
 
+	ret = g_key_file_get_boolean (key_file, "general", "strict_flight_mode", &error);
+	if (!error)
+		priv->options.strict_flight_mode = ret;
+	else
+		g_error_free (error);
+	error = NULL;
+
 	g_key_file_free (key_file);
 }
 
@@ -758,6 +790,15 @@ urf_config_get_persist (UrfConfig *config)
 }
 
 /**
+ * urf_config_get_strict_flight_mode:
+ **/
+gboolean
+urf_config_get_strict_flight_mode (UrfConfig *config)
+{
+	return config->priv->options.strict_flight_mode;
+}
+
+/**
  * urf_persist_get_persist_state:
  **/
 gboolean
@@ -767,39 +808,55 @@ urf_config_get_persist_state (UrfConfig *config,
 	UrfConfigPrivate *priv = URF_CONFIG_GET_PRIVATE (config);
 	gboolean state = FALSE;
 	GError *error = NULL;
+	gint end_type;
 
-	g_return_val_if_fail (type >= 0, FALSE);
+	if (type == RFKILL_TYPE_WWAN && urf_config_get_strict_flight_mode (config))
+		end_type = RFKILL_TYPE_ALL;
+	else
+		end_type = type;
 
-	state = g_key_file_get_boolean (priv->persistence_file, type_to_string(type), "soft", &error);
+	g_return_val_if_fail (end_type >= 0, FALSE);
+
+	state = g_key_file_get_boolean (priv->persistence_file, type_to_string (end_type), "soft", &error);
 
 	if (error) {
 			/* Debug only; there can be devices disappearing when some killswitches
 			 * are triggered.
 			 */
-			g_debug ("Could not get state for device %s: %s", type_to_string(type), error->message);
+			g_debug ("Could not get state for device %s: %s", type_to_string (end_type), error->message);
 			g_error_free (error);
 	}
 
-	g_debug ("saved state for device %s: %s", type_to_string(type), state ? "blocked" : "unblocked");
+	g_debug ("saved state for device %s: %s", type_to_string (end_type), state ? "blocked" : "unblocked");
 
 	return state;
 }
 
-/**
- * urf_persist_set_persist_state:
- **/
-void
-urf_config_set_persist_state (UrfConfig *config,
-                              const gint type,
-                              const KillswitchState state)
+gboolean
+urf_config_get_prev_soft (UrfConfig *config,
+			  const gint type)
 {
 	UrfConfigPrivate *priv = URF_CONFIG_GET_PRIVATE (config);
+	gboolean state = FALSE;
+	GError *error = NULL;
 
-	g_return_if_fail (type >= 0);
+	g_return_val_if_fail (type >= 0, FALSE);
 
-	g_debug ("setting state for device %s: %s", type_to_string(type), state > 0 ? "blocked" : "unblocked");
+	if (type == RFKILL_TYPE_WWAN && urf_config_get_strict_flight_mode (config))
+		return state;
 
-	g_key_file_set_boolean (priv->persistence_file, type_to_string (type), "soft", state > 0);
+	state = g_key_file_get_boolean (priv->persistence_file, type_to_string (type), "prev-soft", &error);
+
+	if (error) {
+		/* Debug only; there can be devices disappearing when some killswitches
+		 * are triggered.
+		 */
+		g_debug ("Could not get state for device %s: %s", type_to_string (type), error->message);
+		g_error_free (error);
+	}
+
+	g_debug ("saved state for device %s: %s", type_to_string (type), state ? "blocked" : "unblocked");
+	return state;
 }
 
 static void
@@ -827,6 +884,47 @@ urf_config_save_persistence_file (UrfConfig *config)
 
 		g_free (content);
 	}
+}
+
+/**
+ * urf_persist_set_persist_state:
+ **/
+void
+urf_config_set_persist_state (UrfConfig *config,
+                              const gint type,
+                              const KillswitchState state)
+{
+	UrfConfigPrivate *priv = URF_CONFIG_GET_PRIVATE (config);
+
+	g_return_if_fail (type >= 0);
+
+	/* For WWAN/strict FM, state saved when FM is successfully set */
+	if (type == RFKILL_TYPE_WWAN && urf_config_get_strict_flight_mode (config))
+		return;
+
+	g_debug ("setting state for device %s: %s", type_to_string (type), state > 0 ? "blocked" : "unblocked");
+
+	g_key_file_set_boolean (priv->persistence_file, type_to_string (type), "soft", state > 0);
+
+	urf_config_save_persistence_file (config);
+}
+
+void
+urf_config_set_prev_soft (UrfConfig *config,
+			  const gint type,
+			  gboolean block)
+{
+	UrfConfigPrivate *priv = URF_CONFIG_GET_PRIVATE (config);
+
+	g_return_if_fail (type >= 0);
+	
+	if (type == RFKILL_TYPE_WWAN && urf_config_get_strict_flight_mode (config))
+		return;
+
+	g_debug ("setting state for device %s: %s", type_to_string (type), block ? "blocked" : "unblocked");
+
+	g_key_file_set_boolean (priv->persistence_file, type_to_string (type), "prev-soft", block);
+	urf_config_save_persistence_file (config);
 }
 
 static void
@@ -859,6 +957,7 @@ urf_config_init (UrfConfig *config)
 	priv->options.master_key = FALSE;
 	priv->options.force_sync = FALSE;
 	priv->options.persist = TRUE;
+	priv->options.strict_flight_mode = TRUE;
 	config->priv = priv;
 
 	urf_config_get_persistence_file (config);
