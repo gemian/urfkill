@@ -294,7 +294,7 @@ urf_daemon_block (UrfDaemon             *daemon,
 	char *error_str;
 	gboolean done = FALSE;
 
-	g_return_val_if_fail (type >= 0, FALSE);
+	g_return_if_fail (type >= 0);
 
 	if (!urf_arbitrator_has_devices (priv->arbitrator))
 		goto out;
