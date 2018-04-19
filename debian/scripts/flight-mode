@@ -7,7 +7,7 @@ import sys
 def check_flight_mode(manager):
 	flight_mode = manager.IsFlightMode()
 	print("flight-mode is: %s" % flight_mode)
-
+	return flight_mode
 
 def set_flight_mode(manager, enabled):
 	flight_mode = manager.FlightMode(enabled)
@@ -17,12 +17,12 @@ if __name__ == "__main__":
 
 	num_args = len(sys.argv)
 
-	if (num_args == 1):
+	if (num_args == 1 or sys.argv[1] == "flip"):
 		check = True
 	elif (num_args == 2):
 		check = False
 	else:
-		print("Usage: %s  0|1" % (sys.argv[0]))
+		print("Usage: %s  0|1|flip" % (sys.argv[0]))
 		exit(1)
 
 	bus = dbus.SystemBus()
@@ -31,6 +31,8 @@ if __name__ == "__main__":
 				'org.freedesktop.URfkill')
 
 	if check == True:
-		check_flight_mode(manager)
+		current = check_flight_mode(manager)
+		if num_args == 2 and sys.argv[1] == "flip":
+			set_flight_mode(manager, not bool(current))
 	else:
 		set_flight_mode(manager, int(sys.argv[1]))
